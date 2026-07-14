@@ -1,0 +1,12 @@
+AstraCortex Knowledge Sample
+============================
+
+Onboarding policy:
+- New operators receive a 48-hour cognitive workspace trial.
+- All high-risk tool actions require approval unless autonomy is set to full.
+- Semantic memory is only written after a critic quality score passes the threshold.
+
+Success metrics:
+- Task completion rate
+- Groundedness of answers with citations
+- Reduction in repeated human corrections

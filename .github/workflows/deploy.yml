@@ -1,0 +1,23 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  # Vercel and Railway auto-deploy from GitHub when projects are linked.
+  # This workflow documents + verifies the repo is deploy-ready.
+  deploy-ready:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deploy manifests
+        run: |
+          test -f backend/Dockerfile
+          test -f backend/railway.toml
+          test -f backend/Procfile
+          test -f frontend/package.json
+          test -f frontend/vercel.json || test -f vercel.json
+          test -f .github/workflows/ci.yml
+          echo "Deploy manifests present. Link this repo in Vercel (frontend/) and Railway (backend/)."
