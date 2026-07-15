@@ -57,12 +57,15 @@ export default function SettingsPage() {
 
       <div className="panel stack">
         <h2>General</h2>
-        <label className="muted">Tier</label>
-        <select value={String(settings.tier || "nexus")} onChange={(e) => setField("tier", e.target.value)}>
-          <option value="seed">Seed — fast local</option>
-          <option value="nexus">Nexus — daily OS</option>
-          <option value="sovereign">Sovereign — deepest reasoning</option>
+        <label className="muted">Tier (hybrid routing)</label>
+        <select value={String(settings.tier || "seed")} onChange={(e) => setField("tier", e.target.value)}>
+          <option value="seed">Seed — Ollama 3B first, xAI failover</option>
+          <option value="nexus">Nexus — Ollama 8B first, xAI failover</option>
+          <option value="sovereign">Sovereign — cloud xAI first, local failover</option>
         </select>
+        <p className="muted" style={{ fontSize: "0.85rem" }}>
+          Runtime mode is set on the API: <strong>hybrid</strong> = local Ollama + cloud xAI. See Brain status below.
+        </p>
         <label className="muted">Autonomy</label>
         <select
           value={String(settings.autonomy || "act_with_approval")}

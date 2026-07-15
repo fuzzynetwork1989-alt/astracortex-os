@@ -14,10 +14,10 @@ COPY db ./db
 
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
-# Cloud-safe defaults (override on Railway)
+# Hybrid defaults: local Ollama when reachable, xAI failover when XAI_API_KEY set
 ENV UPLOAD_DIR=/tmp/uploads
 ENV ALLOW_CORS_ALL=true
-ENV INFERENCE_MODE=cloud
+ENV INFERENCE_MODE=hybrid
 EXPOSE 8000
 
 # Railway uses $PORT; keep-alive high for LLM

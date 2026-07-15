@@ -1,126 +1,128 @@
-# AstraCortex — Cloud deployment (Railway + Vercel)
+# AstraCortex — Hybrid deployment
 
-**Cloud-first:** browser → Vercel (Next.js) → Railway (FastAPI) → xAI (LLM).  
-No local Ollama required on the server.
-
-## Architecture
+**Hybrid Cognitive OS:** local Ollama **and** cloud xAI, with Railway API + Vercel UI.
 
 ```
-User browser / desktop / mobile
-        │
-        ▼
-  Vercel (frontend)     NEXT_PUBLIC_API_URL=https://api....railway.app
-        │  CORS direct fetch (never Next proxy)
-        ▼
-  Railway (FastAPI)     Postgres + Redis plugins
-        │
-        ▼
-  xAI Grok API          XAI_API_KEY (required for cloud LLM)
+                    ┌─────────────────┐
+  Browser / desktop │  Vercel (UI)    │  NEXT_PUBLIC_API_URL → Railway
+                    └────────┬────────┘
+                             │ direct CORS fetch (never Next proxy)
+                    ┌────────▼────────┐
+                    │ Railway FastAPI │  Postgres + Redis
+                    └────────┬────────┘
+                 ┌───────────┴───────────┐
+                 ▼                       ▼
+        Ollama (local/tunnel)      xAI Grok (cloud)
+        seed/nexus first           failover + sovereign
 ```
+
+| Mode | When |
+|------|------|
+| **hybrid** (default) | Ollama first; if down or fails → xAI if `XAI_API_KEY` set |
+| local | Ollama only (fully offline) |
+| cloud | xAI only (no Ollama) |
 
 Repo: `https://github.com/fuzzynetwork1989-alt/astracortex-os`
 
 ---
 
-## 1. Push latest code
+## A. Local hybrid (this machine)
 
 ```bash
-git push origin main
+# 1) Ollama on host
+ollama serve
+ollama pull qwen2.5:3b
+
+# 2) Optional cloud failover
+# set XAI_API_KEY in .env
+
+# 3) Stack
+docker compose up -d postgres redis api
+cd frontend && set NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 && npm run dev
+```
+
+`.env` / `docker-compose` already use `INFERENCE_MODE=hybrid` and  
+`OLLAMA_BASE_URL=http://host.docker.internal:11434`.
+
+Verify:
+
+```bash
+curl http://127.0.0.1:8000/health
+# hybrid.local_ollama should be true; set XAI_API_KEY for cloud_xai true
 ```
 
 ---
 
-## 2. Railway (API + Postgres + Redis)
+## B. Cloud hybrid (Railway + Vercel)
 
-1. [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub**
-2. Select `fuzzynetwork1989-alt/astracortex-os`
-3. **Root Directory:** `backend`
-4. **Builder:** Dockerfile (auto from `backend/Dockerfile`)
-5. Add plugins:
-   - **PostgreSQL** (Railway sets `DATABASE_URL` — app auto-converts to `asyncpg` + SSL)
-   - **Redis** (optional; in-memory WM if missing)
-6. **Variables** (service settings):
+### 1. Railway API
+
+1. Deploy GitHub repo → root **`backend`**
+2. Plugins: **PostgreSQL** + **Redis**
+3. Variables (see `backend/.env.cloud.example`):
+
+| Variable | Hybrid value |
+|----------|----------------|
+| `INFERENCE_MODE` | **`hybrid`** |
+| `XAI_API_KEY` | required for cloud half |
+| `OLLAMA_BASE_URL` | empty **or** your Ollama tunnel URL |
+| `ALLOW_CORS_ALL` | `true` |
+| `JWT_SECRET` | long random |
+| `UPLOAD_DIR` | `/tmp/uploads` |
+| `PUBLIC_API_URL` | `https://<railway-domain>` |
+
+4. Domain → health `/ready` or `/health`
+
+**Without Ollama tunnel:** hybrid still works — Ollama attempts fail fast, then **xAI** answers.  
+**With tunnel:** seed/nexus hit your home GPU/CPU first.
+
+### 2. Vercel UI
 
 | Variable | Value |
 |----------|--------|
-| `JWT_SECRET` | long random string |
-| `INFERENCE_MODE` | `cloud` |
-| `XAI_API_KEY` | your xAI key (`xai-...`) |
-| `XAI_BASE_URL` | `https://api.x.ai/v1` |
-| `ALLOW_CORS_ALL` | `true` |
-| `UPLOAD_DIR` | `/tmp/uploads` |
-| `PUBLIC_API_URL` | `https://<your-railway-domain>` (set after first deploy) |
-| `DEFAULT_TOKEN_BALANCE` | `1000000` |
-| `HUMAN_LIKE_SYSTEM` | `true` |
-| `PRODUCT_TIER_DEFAULT` | `seed` |
+| `NEXT_PUBLIC_API_URL` | `https://<railway-domain>` |
 
-7. Health check path: `/ready` (or `/health`)
-8. Generate domain → copy URL → set `PUBLIC_API_URL` to that HTTPS URL
-9. Redeploy
+Root directory: **`frontend`**
 
-### Verify API
+### 3. Optional Ollama tunnel (true hybrid from cloud API)
 
 ```bash
-curl https://YOUR-APP.up.railway.app/health
-curl https://YOUR-APP.up.railway.app/ready
+# example: cloudflare tunnel or ngrok to host:11434
+# then on Railway:
+OLLAMA_BASE_URL=https://ollama.your-tunnel.example
 ```
 
 ---
 
-## 3. Vercel (frontend)
+## Routing rules (brain)
 
-1. [vercel.com](https://vercel.com) → **Add New** → **Project** → import the same GitHub repo
-2. **Root Directory:** `frontend`
-3. Framework: Next.js
-4. Environment variable:
-
-| Name | Value |
-|------|--------|
-| `NEXT_PUBLIC_API_URL` | `https://YOUR-APP.up.railway.app` (no trailing slash) |
-
-5. Deploy → open the Vercel URL → **Register** → Chat / API keys
+| Tier | Hybrid primary | Failover |
+|------|----------------|----------|
+| **Seed** | Ollama `qwen2.5:3b` | xAI executor/planner |
+| **Nexus** | Ollama 8B class | xAI |
+| **Sovereign** | xAI if key set | Ollama local |
 
 ---
 
-## 4. Optional: hybrid (cloud API + your home Ollama)
+## Clients
 
-Only if you expose Ollama safely (tunnel):
-
-```env
-INFERENCE_MODE=hybrid
-OLLAMA_BASE_URL=https://your-tunnel.example
-XAI_API_KEY=...   # failover
-```
-
-Default cloud path needs **only** `XAI_API_KEY`.
+- Web: Vercel URL  
+- Desktop Electron: same Vercel URL or set API to Railway  
+- Mobile Expo: `EXPO_PUBLIC_API_URL=https://railway...`  
+- Sellable API: `https://railway.../v1/chat/completions` + `sk-astra-...`
 
 ---
 
-## 5. Sellable OpenAI-compatible API
-
-After register, use the `sk-astra-...` key:
+## Quick checks
 
 ```bash
-curl https://YOUR-APP.up.railway.app/v1/chat/completions \
+curl https://API/health
+# "inference_mode":"hybrid","local_ollama":bool,"cloud_xai":bool
+
+curl https://API/v1/chat/completions \
   -H "Authorization: Bearer sk-astra-..." \
   -H "Content-Type: application/json" \
-  -d '{"model":"seed","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"seed","messages":[{"role":"user","content":"hi"}]}'
 ```
 
----
-
-## 6. Desktop / mobile clients
-
-- Electron: set API URL to Railway domain (or keep Vercel UI URL for shell)
-- Expo: `EXPO_PUBLIC_API_URL=https://YOUR-APP.up.railway.app`
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| Register “Failed to fetch” | `NEXT_PUBLIC_API_URL` wrong or CORS; set `ALLOW_CORS_ALL=true` |
-| 500 on /ready | Postgres not linked / `DATABASE_URL` missing |
-| Chat empty / offline | Set `XAI_API_KEY` + `INFERENCE_MODE=cloud` |
-| Socket hang up via Next | Never proxy LLM through Next rewrites |
+Response includes `provider`: `ollama` or `xai` so you can see which half answered.

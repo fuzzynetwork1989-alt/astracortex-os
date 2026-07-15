@@ -130,14 +130,52 @@ def pick_model(role: Role, tier: str = "seed", prefer: str | None = None) -> tup
         "research": s.xai_planner_model,
     }
 
+    mode = (mode or "hybrid").lower()
     if mode == "cloud" and cloud_ok:
         return "xai", cloud_map[role]
     if mode == "local":
         return "ollama", local_map[role]
-    # hybrid: prefer local for seed/nexus; cloud only for sovereign when key present
-    if tier == "sovereign" and cloud_ok and role in {"planner", "critic", "chat"}:
+
+    # hybrid (default): local Ollama first; sovereign prefers cloud when key set
+    if tier == "sovereign" and cloud_ok and role in {"planner", "critic", "chat", "research"}:
         return "xai", cloud_map[role]
+    # If no cloud key, always local. With key, still prefer local for seed/nexus speed.
     return "ollama", local_map[role]
+
+
+def _hybrid_attempts(
+    role: Role,
+    tier: str,
+    provider: str,
+    model: str,
+) -> list[tuple[str, str]]:
+    """Primary + failover path for hybrid: Ollama ↔ xAI."""
+    s = get_settings()
+    mode = (s.inference_mode or "hybrid").lower()
+    cloud_ok = bool(s.xai_api_key)
+    attempts: list[tuple[str, str]] = [(provider, model)]
+
+    if mode == "local":
+        return attempts
+    if mode == "cloud":
+        if provider != "xai" and cloud_ok:
+            attempts.append(("xai", s.xai_executor_model if role == "executor" else s.xai_planner_model))
+        return attempts
+
+    # hybrid: always try the other side when available
+    if provider == "ollama" and cloud_ok:
+        cloud_model = s.xai_executor_model if role == "executor" else s.xai_planner_model
+        if role == "critic":
+            cloud_model = s.xai_critic_model
+        attempts.append(("xai", cloud_model))
+    elif provider == "xai":
+        local_model = s.ollama_seed_model if tier == "seed" else (
+            s.ollama_executor_model if role == "executor" else s.ollama_planner_model
+        )
+        if role == "chat" and tier != "seed":
+            local_model = s.ollama_nexus_model
+        attempts.append(("ollama", local_model))
+    return attempts
 
 
 async def chat(
@@ -146,21 +184,14 @@ async def chat(
     *,
     temperature: float = 0.2,
     response_json: bool = False,
-    tier: str = "nexus",
+    tier: str = "seed",
     model_override: str | None = None,
 ) -> dict[str, Any]:
     """Returns {content, provider, model, latency_ms, usage}."""
     messages = _humanize(messages)
     provider, model = pick_model(role, tier=tier, prefer=model_override)
     start = time.perf_counter()
-
-    # Try primary, then failover
-    attempts = [(provider, model)]
-    s = get_settings()
-    if provider == "ollama" and s.xai_api_key:
-        attempts.append(("xai", pick_model(role, tier=tier)[1] if False else s.xai_planner_model if role != "executor" else s.xai_executor_model))
-    if provider == "xai":
-        attempts.append(("ollama", pick_model(role, tier="nexus")[1] if role == "executor" else s.ollama_planner_model))
+    attempts = _hybrid_attempts(role, tier, provider, model)
 
     last_err = None
     for prov, mod in attempts:
@@ -180,6 +211,8 @@ async def chat(
                 "model": mod,
                 "latency_ms": latency,
                 "usage": usage,
+                "mode": get_settings().inference_mode,
+                "attempted": [f"{a[0]}/{a[1]}" for a in attempts],
             }
         except Exception as exc:  # noqa: BLE001
             last_err = exc
@@ -193,6 +226,7 @@ async def chat(
         "model": "astracortex-offline",
         "latency_ms": int((time.perf_counter() - start) * 1000),
         "usage": _estimate_usage(messages, content),
+        "mode": get_settings().inference_mode,
     }
 
 

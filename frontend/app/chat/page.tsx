@@ -116,9 +116,9 @@ export default function ChatPage() {
         </div>
         <div className="row">
           <select value={tier} onChange={(e) => setTier(e.target.value)} style={{ width: 170 }}>
-            <option value="seed">Seed (fast · 3B)</option>
-            <option value="nexus">Nexus (8B · slower)</option>
-            <option value="sovereign">Sovereign (70B · slow)</option>
+            <option value="seed">Seed · hybrid local 3B</option>
+            <option value="nexus">Nexus · hybrid local 8B</option>
+            <option value="sovereign">Sovereign · cloud first</option>
           </select>
           <button className="secondary" onClick={() => setUseRag((v) => !v)}>
             RAG {useRag ? "on" : "off"}
