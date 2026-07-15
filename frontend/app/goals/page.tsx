@@ -1,7 +1,7 @@
 "use client";
 
 import Shell from "@/components/Shell";
-import { api, getApiUrl, loadAuth, readSSE } from "@/lib/api";
+import { api, getStreamApiUrl, loadAuth, readSSE } from "@/lib/api";
 import { useState } from "react";
 
 /** Full cognitive OS loop UI (plan → act → reflect). */
@@ -31,7 +31,7 @@ export default function GoalsPage() {
       );
       setTaskId(start.task_id);
       push(`task ${start.task_id}`);
-      await readSSE(`${getApiUrl()}/chat/stream/${start.task_id}`, auth.access_token, (event, data) => {
+      await readSSE(`${getStreamApiUrl()}/chat/stream/${start.task_id}`, auth.access_token, (event, data) => {
         if (event === "token") setAnswer((a) => a + String(data.token || ""));
         else if (event === "plan") push(`plan v${data.version} · ${((data.steps as unknown[]) || []).length} steps`);
         else if (event === "tool_call") push(`tool ${data.tool_name} ${data.success ? "ok" : "fail"}`);

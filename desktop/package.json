@@ -1,13 +1,56 @@
 {
   "name": "astracortex-desktop",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
+  "description": "AstraCortex OS Desktop",
+  "author": "fuzzynetwork1989-alt",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "pack": "electron ."
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win portable nsis",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.astracortex.os",
+    "productName": "AstraCortex OS",
+    "copyright": "Copyright © AstraCortex",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "AstraCortex-OS-${version}-${os}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AstraCortex OS"
+    },
+    "portable": {
+      "artifactName": "AstraCortex-OS-Portable-${version}.exe"
+    }
   },
   "devDependencies": {
-    "electron": "^35.0.0"
+    "electron": "35.1.2",
+    "electron-builder": "25.1.8"
   }
 }

@@ -100,36 +100,52 @@ app.include_router(billing.router, prefix="/billing", tags=["billing"])
 app.include_router(v1_openai.router, prefix="/v1", tags=["openai-compatible"])
 
 
+# Lightweight health cache — never block every probe on Ollama tags
+_health_cache: dict = {"ts": 0.0, "payload": None}
+
+
 @app.get("/health")
 async def health():
-    st = await brain.brain_status()
+    import time as _time
+
     from app.services import qlora
     from app.services.working_memory import get_redis
 
+    now = _time.time()
+    if _health_cache["payload"] and now - float(_health_cache["ts"]) < 15:
+        return _health_cache["payload"]
+
+    st = await brain.brain_status()
     redis_client = await get_redis()
-    return {
+    payload = {
         "status": "ok",
         "product": "AstraCortex OS",
-        "version": "2.1.0",
+        "version": "2.1.1",
         "hybrid": {
             "mode": get_settings().inference_mode,
             "local_ollama": st.get("ollama_online"),
             "cloud_xai": st.get("cloud_configured"),
             "redis": redis_client is not None,
         },
-        "llm_configured": st.get("cloud_configured") or st.get("ollama_online"),
+        "llm_configured": bool(st.get("cloud_configured") or st.get("ollama_online")),
         "brain": st,
         "qlora_adapters": qlora.list_adapters(),
         "public_api_url": get_settings().public_api_url,
+        "client_hint": "Browser must call this API directly (not via Next /backend proxy)",
     }
+    _health_cache["ts"] = now
+    _health_cache["payload"] = payload
+    return payload
 
 
 @app.get("/ready")
 async def ready():
-    """Railway / load balancer readiness — DB must respond."""
+    """Liveness for Docker/Railway — DB only, never Ollama (keeps healthchecks fast)."""
+    from fastapi.responses import JSONResponse
+
     try:
         async with engine.begin() as conn:
             await conn.execute(text("SELECT 1"))
         return {"ready": True}
     except Exception as exc:  # noqa: BLE001
-        return {"ready": False, "error": str(exc)}
+        return JSONResponse({"ready": False, "error": str(exc)}, status_code=503)

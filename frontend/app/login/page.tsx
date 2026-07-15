@@ -1,8 +1,9 @@
 "use client";
 
-import { api, saveAuth } from "@/lib/api";
+import { api, getApiUrl, pingApi, saveAuth } from "@/lib/api";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type TokenOut = {
   access_token: string;
@@ -23,6 +24,13 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [apiKeyNotice, setApiKeyNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [apiStatus, setApiStatus] = useState<string>("checking…");
+
+  useEffect(() => {
+    pingApi().then((r) => {
+      setApiStatus(r.ok ? `API online · ${r.url}` : `API offline · ${r.url} · ${r.detail || ""}`);
+    });
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -54,12 +62,23 @@ export default function LoginPage() {
         <div>
           <h1>AstraCortex OS</h1>
           <p className="muted">Hybrid cognitive OS · chat · API tokens · multi-platform</p>
+          <p className="muted" style={{ fontSize: "0.8rem", marginTop: 8 }}>
+            {apiStatus}
+          </p>
         </div>
         <div className="row">
-          <button type="button" className={mode === "register" ? "" : "secondary"} onClick={() => setMode("register")}>
+          <button
+            type="button"
+            className={mode === "register" ? "" : "secondary"}
+            onClick={() => setMode("register")}
+          >
             Register
           </button>
-          <button type="button" className={mode === "login" ? "" : "secondary"} onClick={() => setMode("login")}>
+          <button
+            type="button"
+            className={mode === "login" ? "" : "secondary"}
+            onClick={() => setMode("login")}
+          >
             Login
           </button>
         </div>
@@ -67,7 +86,13 @@ export default function LoginPage() {
           {mode === "register" && (
             <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
           )}
-          <input type="email" placeholder="Email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input
+            type="email"
+            placeholder="Email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
           <input
             type="password"
             placeholder="Password (min 8)"
@@ -87,6 +112,13 @@ export default function LoginPage() {
             {loading ? "Working…" : mode === "login" ? "Enter OS" : "Create workspace + API key"}
           </button>
         </form>
+        <p className="muted" style={{ fontSize: "0.75rem" }}>
+          API: {typeof window !== "undefined" ? getApiUrl() : "…"} · Offline-first via local Ollama
+          <br />
+          <Link href="/privacy">Privacy</Link>
+          {" · "}
+          <Link href="/terms">Terms</Link>
+        </p>
       </div>
     </div>
   );

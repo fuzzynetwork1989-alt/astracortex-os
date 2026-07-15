@@ -15,6 +15,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -25,6 +26,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   api:
     build:
@@ -38,29 +40,44 @@ services:
       UPLOAD_DIR: /data/uploads
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       INFERENCE_MODE: hybrid
+      ALLOW_CORS_ALL: "true"
+      PUBLIC_API_URL: http://127.0.0.1:8000
+      # Do not bind-mount app code with reload — that killed connections mid-request
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:
       - ./data/uploads:/data/uploads
-      - ./backend/app:/app/app
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    # Give LLM calls time; prevent proxy-side kills
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
 
   web:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Browser talks DIRECTLY to host API — never through Next rewrite proxy
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
     ports:
       - "3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

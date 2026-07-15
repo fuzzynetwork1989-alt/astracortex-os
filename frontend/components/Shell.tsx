@@ -21,6 +21,8 @@ const system = [
   { href: "/billing", label: "Billing / Plans", icon: "$" },
   { href: "/settings", label: "Settings", icon: "⚙" },
   { href: "/xr", label: "XR / Spatial", icon: "◎" },
+  { href: "/privacy", label: "Privacy", icon: "ⓘ" },
+  { href: "/terms", label: "Terms", icon: "§" },
 ];
 
 export default function Shell({

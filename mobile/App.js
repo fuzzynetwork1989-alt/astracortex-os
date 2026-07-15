@@ -10,20 +10,43 @@ import {
   ActivityIndicator,
   ScrollView,
   StatusBar,
+  Platform,
+  KeyboardAvoidingView,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar as ExpoStatusBar } from "expo-status-bar";
+import Constants from "expo-constants";
 
-// Android emulator → host machine. Device: set EXPO_PUBLIC_API_URL to your LAN IP.
-const API_URL =
+/**
+ * Resolve API base:
+ * - EXPO_PUBLIC_API_URL env
+ * - saved override
+ * - Android emulator: 10.0.2.2
+ * - Device / default: LAN IP baked at build or localhost
+ */
+const DEFAULT_API =
   process.env.EXPO_PUBLIC_API_URL ||
-  (typeof window !== "undefined" ? "http://localhost:8000" : "http://10.0.2.2:8000");
+  (Platform.OS === "android" ? "http://10.0.2.2:8000" : "http://127.0.0.1:8000");
+
+async function getApiBase() {
+  const saved = await AsyncStorage.getItem("astracortex_api_url");
+  return (saved || DEFAULT_API).replace(/\/$/, "");
+}
 
 async function api(path, options = {}, token) {
+  const base = await getApiBase();
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  if (!res.ok) throw new Error(await res.text());
+  const res = await fetch(`${base}${path}`, { ...options, headers });
+  if (!res.ok) {
+    const t = await res.text();
+    let detail = t;
+    try {
+      const j = JSON.parse(t);
+      if (j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+    } catch (_) {}
+    throw new Error(detail || res.statusText);
+  }
   return res.json();
 }
 
@@ -36,18 +59,39 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [metrics, setMetrics] = useState(null);
+  const [status, setStatus] = useState("Ready");
   const [sessionId, setSessionId] = useState(null);
+  const [apiUrl, setApiUrl] = useState(DEFAULT_API);
+  const [health, setHealth] = useState("");
 
   useEffect(() => {
-    AsyncStorage.getItem("astracortex_auth").then((raw) => {
+    (async () => {
+      const base = await getApiBase();
+      setApiUrl(base);
+      const raw = await AsyncStorage.getItem("astracortex_auth");
       if (raw) {
-        const a = JSON.parse(raw);
-        setAuth(a);
+        setAuth(JSON.parse(raw));
         setScreen("chat");
       }
-    });
+      try {
+        const h = await fetch(`${base}/health`);
+        setHealth(h.ok ? "API online" : `API HTTP ${h.status}`);
+      } catch (e) {
+        setHealth(`API offline · ${base}`);
+      }
+    })();
   }, []);
+
+  async function saveApiUrl() {
+    await AsyncStorage.setItem("astracortex_api_url", apiUrl.replace(/\/$/, ""));
+    setStatus("API URL saved");
+    try {
+      const h = await fetch(`${apiUrl.replace(/\/$/, "")}/health`);
+      setHealth(h.ok ? "API online" : `API HTTP ${h.status}`);
+    } catch {
+      setHealth("API offline");
+    }
+  }
 
   async function loginOrRegister(mode) {
     setBusy(true);
@@ -62,6 +106,7 @@ export default function App() {
       await AsyncStorage.setItem("astracortex_auth", JSON.stringify(data));
       setAuth(data);
       setScreen("chat");
+      setStatus("Signed in");
     } catch (e) {
       setError(String(e.message || e));
     } finally {
@@ -76,92 +121,39 @@ export default function App() {
     const userText = message.trim();
     setMessage("");
     setMessages((m) => [...m, { role: "user", content: userText }, { role: "assistant", content: "…" }]);
+    setStatus("Generating… (first reply can take 20–60s)");
     try {
-      const start = await api(
-        "/converse",
+      const reply = await api(
+        "/converse/reply",
         {
           method: "POST",
           body: JSON.stringify({
             session_id: sessionId,
             message: userText,
-            tier: "nexus",
-            use_rag: true,
+            tier: "seed",
+            use_rag: false,
           }),
         },
         auth.access_token
       );
-      setSessionId(start.session_id);
-      // Non-stream completion via OpenAI-compatible path if api_key present, else poll messages
-      let answer = "";
-      if (auth.api_key) {
-        const completion = await fetch(`${API_URL}/v1/chat/completions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${auth.api_key}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "astracortex-nexus",
-            messages: [
-              ...messages.map((x) => ({ role: x.role, content: x.content })).filter((x) => x.content !== "…"),
-              { role: "user", content: userText },
-            ],
-          }),
-        });
-        if (completion.ok) {
-          const json = await completion.json();
-          answer = json.choices?.[0]?.message?.content || "";
-        }
-      }
-      if (!answer) {
-        // Fallback: simple cognitive chat via register-session then wait on stream text buffer using fetch
-        const streamRes = await fetch(
-          `${API_URL}/converse/stream/${start.session_id}?tier=nexus&use_rag=true`,
-          { headers: { Authorization: `Bearer ${auth.access_token}` } }
-        );
-        const text = await streamRes.text();
-        const dones = [...text.matchAll(/event: done\ndata: (.*)/g)];
-        if (dones.length) {
-          try {
-            answer = JSON.parse(dones[dones.length - 1][1]).answer || text.slice(-800);
-          } catch {
-            answer = text.slice(-800);
-          }
-        } else {
-          const tokens = [...text.matchAll(/"token":\s*"((?:\\.|[^"\\])*)"/g)].map((m) => {
-            try {
-              return JSON.parse(`"${m[1]}"`);
-            } catch {
-              return m[1];
-            }
-          });
-          answer = tokens.join("") || "No response";
-        }
-      }
+      setSessionId(reply.session_id);
       setMessages((m) => {
         const copy = [...m];
-        copy[copy.length - 1] = { role: "assistant", content: answer };
+        copy[copy.length - 1] = { role: "assistant", content: reply.answer || "(empty)" };
         return copy;
       });
+      setStatus(`Done · ${reply.model || "seed"} · ${reply.latency_ms ?? "?"}ms`);
     } catch (e) {
-      setError(String(e.message || e));
+      const msg = String(e.message || e);
+      setError(msg);
+      setStatus("Error");
       setMessages((m) => {
         const copy = [...m];
-        copy[copy.length - 1] = { role: "assistant", content: "Error: " + String(e.message || e) };
+        copy[copy.length - 1] = { role: "assistant", content: `Error: ${msg}` };
         return copy;
       });
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function loadMetrics() {
-    if (!auth) return;
-    try {
-      setMetrics(await api("/metrics", {}, auth.access_token));
-      setScreen("home");
-    } catch (e) {
-      setError(String(e.message || e));
     }
   }
 
@@ -178,20 +170,36 @@ export default function App() {
       <SafeAreaView style={styles.root}>
         <ExpoStatusBar style="light" />
         <StatusBar barStyle="light-content" />
-        <View style={styles.card}>
+        <ScrollView contentContainerStyle={styles.card}>
           <Text style={styles.title}>AstraCortex</Text>
-          <Text style={styles.sub}>Mobile cognitive OS</Text>
+          <Text style={styles.sub}>Mobile cognitive OS · v2.1</Text>
+          <Text style={styles.health}>{health}</Text>
+
+          <Text style={styles.label}>API URL (phone: use PC Wi‑Fi IP)</Text>
+          <TextInput
+            style={styles.input}
+            value={apiUrl}
+            onChangeText={setApiUrl}
+            autoCapitalize="none"
+            placeholder="http://192.168.x.x:8000"
+            placeholderTextColor="#8b97ab"
+          />
+          <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={saveApiUrl}>
+            <Text style={styles.btnText}>Save API URL</Text>
+          </TouchableOpacity>
+
           <TextInput
             style={styles.input}
             placeholder="Email"
             placeholderTextColor="#8b97ab"
             autoCapitalize="none"
+            keyboardType="email-address"
             value={email}
             onChangeText={setEmail}
           />
           <TextInput
             style={styles.input}
-            placeholder="Password"
+            placeholder="Password (min 8)"
             placeholderTextColor="#8b97ab"
             secureTextEntry
             value={password}
@@ -205,12 +213,19 @@ export default function App() {
               <TouchableOpacity style={styles.btn} onPress={() => loginOrRegister("register")}>
                 <Text style={styles.btnText}>Register</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={() => loginOrRegister("login")}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnSecondary]}
+                onPress={() => loginOrRegister("login")}
+              >
                 <Text style={styles.btnText}>Login</Text>
               </TouchableOpacity>
             </View>
           )}
-        </View>
+          <Text style={styles.hint}>
+            Emulator uses 10.0.2.2:8000. Physical device: set API to your PC IP (e.g. http://192.168.10.55:8000)
+            and allow Windows Firewall for port 8000.
+          </Text>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -219,13 +234,13 @@ export default function App() {
     <SafeAreaView style={styles.root}>
       <ExpoStatusBar style="light" />
       <View style={styles.top}>
-        <Text style={styles.titleSmall}>AstraCortex</Text>
+        <View>
+          <Text style={styles.titleSmall}>AstraCortex</Text>
+          <Text style={styles.subTiny}>{status}</Text>
+        </View>
         <View style={styles.row}>
           <TouchableOpacity onPress={() => setScreen("chat")}>
             <Text style={styles.link}>Chat</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={loadMetrics}>
-            <Text style={styles.link}>Home</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={logout}>
             <Text style={styles.link}>Out</Text>
@@ -233,48 +248,51 @@ export default function App() {
         </View>
       </View>
 
-      {screen === "home" ? (
-        <ScrollView style={{ padding: 16 }}>
-          <Text style={styles.sub}>Dashboard</Text>
-          <Text style={styles.mono}>{JSON.stringify(metrics, null, 2)}</Text>
-        </ScrollView>
-      ) : (
-        <>
-          <FlatList
-            style={{ flex: 1, padding: 12 }}
-            data={messages}
-            keyExtractor={(_, i) => String(i)}
-            renderItem={({ item }) => (
-              <View style={[styles.bubble, item.role === "user" ? styles.user : styles.assistant]}>
-                <Text style={styles.bubbleText}>{item.content}</Text>
-              </View>
-            )}
-          />
-          {!!error && <Text style={styles.error}>{error}</Text>}
-          <View style={styles.composer}>
-            <TextInput
-              style={[styles.input, { flex: 1 }]}
-              placeholder="Message…"
-              placeholderTextColor="#8b97ab"
-              value={message}
-              onChangeText={setMessage}
-            />
-            <TouchableOpacity style={styles.btn} onPress={sendChat} disabled={busy}>
-              <Text style={styles.btnText}>{busy ? "…" : "Send"}</Text>
-            </TouchableOpacity>
+      <FlatList
+        style={{ flex: 1, padding: 12 }}
+        data={messages}
+        keyExtractor={(_, i) => String(i)}
+        renderItem={({ item }) => (
+          <View style={[styles.bubble, item.role === "user" ? styles.user : styles.assistant]}>
+            <Text style={styles.bubbleText}>{item.content}</Text>
           </View>
-        </>
-      )}
+        )}
+        ListEmptyComponent={
+          <Text style={styles.sub}>Ask anything. Seed tier replies in seconds after model load.</Text>
+        }
+      />
+      {!!error && <Text style={styles.error}>{error}</Text>}
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={styles.composer}>
+          <TextInput
+            style={[styles.input, { flex: 1, marginBottom: 0 }]}
+            placeholder="Message…"
+            placeholderTextColor="#8b97ab"
+            value={message}
+            onChangeText={setMessage}
+          />
+          <TouchableOpacity style={styles.btn} onPress={sendChat} disabled={busy}>
+            {busy ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.btnText}>Send</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#0a0c10" },
-  card: { margin: 20, padding: 20, backgroundColor: "#151a23", borderRadius: 16, gap: 12 },
+  card: { margin: 16, padding: 20, backgroundColor: "#151a23", borderRadius: 16, gap: 12 },
   title: { color: "#fff", fontSize: 28, fontWeight: "800" },
   titleSmall: { color: "#fff", fontSize: 18, fontWeight: "700" },
-  sub: { color: "#8b97ab", marginBottom: 8 },
+  sub: { color: "#8b97ab", marginBottom: 4 },
+  subTiny: { color: "#8b97ab", fontSize: 11 },
+  health: { color: "#2ee6a6", fontSize: 12, marginBottom: 8 },
+  label: { color: "#8b97ab", fontSize: 12 },
   input: {
     backgroundColor: "#11151c",
     borderColor: "#2a3344",
@@ -282,6 +300,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
     color: "#eef2f8",
+    marginBottom: 8,
   },
   row: { flexDirection: "row", gap: 10, alignItems: "center" },
   btn: {
@@ -289,6 +308,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 12,
+    minWidth: 72,
+    alignItems: "center",
   },
   btnSecondary: { backgroundColor: "#2a3344" },
   btnText: { color: "#fff", fontWeight: "700" },
@@ -314,5 +335,5 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     alignItems: "center",
   },
-  mono: { color: "#8b97ab", fontFamily: "monospace", fontSize: 11 },
+  hint: { color: "#8b97ab", fontSize: 11, marginTop: 8, lineHeight: 16 },
 });

@@ -2,11 +2,13 @@
   "expo": {
     "name": "AstraCortex",
     "slug": "astracortex",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "icon": "./assets/icon.png",
     "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
       "backgroundColor": "#0a0c10"
     },
     "ios": {
@@ -15,12 +17,22 @@
     },
     "android": {
       "package": "com.astracortex.os",
+      "versionCode": 21,
       "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#0a0c10"
-      }
+      },
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE"
+      ]
     },
     "extra": {
       "apiUrl": "http://10.0.2.2:8000"
-    }
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-font"
+    ]
   }
 }
