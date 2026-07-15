@@ -7,7 +7,8 @@ pydantic==2.11.3
 pydantic-settings==2.8.1
 python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
-bcrypt==4.3.0
+# 4.1+ removed bcrypt.__about__ which passlib probes (noisy WARNING on every hash)
+bcrypt==4.0.1
 python-multipart==0.0.20
 redis==5.2.1
 httpx==0.28.1

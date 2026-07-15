@@ -15,7 +15,8 @@ async def chat(
     *,
     temperature: float = 0.2,
     response_json: bool = False,
-    tier: str = "nexus",
+    # seed = fast qwen2.5:3b — OS loop must not hang on 70B / deepseek-r1 by default
+    tier: str = "seed",
 ) -> str:
     result = await brain.chat(
         role,  # type: ignore[arg-type]
@@ -32,7 +33,7 @@ async def chat_stream(
     messages: list[dict[str, str]],
     *,
     temperature: float = 0.3,
-    tier: str = "nexus",
+    tier: str = "seed",
 ) -> AsyncIterator[str]:
     async for t in brain.chat_stream(role, messages, temperature=temperature, tier=tier):  # type: ignore[arg-type]
         yield t

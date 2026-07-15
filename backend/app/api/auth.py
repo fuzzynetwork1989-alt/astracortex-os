@@ -77,6 +77,8 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
 
 @router.post("/login", response_model=TokenOut)
 async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
+    from app.db.models import ApiKey
+
     result = await db.execute(select(User).where(User.email == body.email.lower()))
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
@@ -87,6 +89,16 @@ async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
     if not member:
         raise HTTPException(400, "User has no organization")
 
+    # Surface balance (raw key is only shown once at create — never re-hash recoverable)
+    key_row = (
+        await db.execute(
+            select(ApiKey)
+            .where(ApiKey.user_id == user.id, ApiKey.org_id == member.org_id, ApiKey.is_active.is_(True))
+            .order_by(ApiKey.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
     token = create_access_token(str(user.id), {"org_id": str(member.org_id)})
     return TokenOut(
         access_token=token,
@@ -94,6 +106,8 @@ async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
         org_id=str(member.org_id),
         email=user.email,
         name=user.name,
+        api_key=None,  # cannot re-show hashed key
+        token_balance=key_row.token_balance if key_row else None,
     )
 
 

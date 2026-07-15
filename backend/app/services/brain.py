@@ -85,7 +85,7 @@ async def list_ollama_models() -> list[str]:
     return []
 
 
-def pick_model(role: Role, tier: str = "nexus", prefer: str | None = None) -> tuple[str, str]:
+def pick_model(role: Role, tier: str = "seed", prefer: str | None = None) -> tuple[str, str]:
     """Return (provider, model_id). provider: ollama | xai | offline."""
     s = get_settings()
     if prefer:
@@ -97,22 +97,29 @@ def pick_model(role: Role, tier: str = "nexus", prefer: str | None = None) -> tu
 
     mode = s.inference_mode
     cloud_ok = bool(s.xai_api_key)
+    tier = (tier or "seed").lower()
 
-    local_map = {
-        "planner": s.ollama_planner_model,
-        "executor": s.ollama_executor_model,
-        "critic": s.ollama_critic_model,
-        "summarizer": s.ollama_summarizer_model,
-        "chat": s.ollama_chat_model,
-        "research": s.ollama_chat_model,
-    }
-    # Tier overrides for chat-facing quality
-    if role in {"chat", "planner"} and tier == "seed":
-        local_map[role] = s.ollama_seed_model
-    if role in {"chat", "planner"} and tier == "sovereign":
-        local_map[role] = s.ollama_sovereign_model
-    if role in {"chat", "planner"} and tier == "nexus":
-        local_map[role] = s.ollama_nexus_model if role == "chat" else s.ollama_planner_model
+    # seed = always fast 3B for every role (OS loop + chat reliability)
+    if tier == "seed":
+        local = s.ollama_seed_model
+        local_map = {r: local for r in ("planner", "executor", "critic", "summarizer", "chat", "research")}
+    else:
+        local_map = {
+            "planner": s.ollama_planner_model,
+            "executor": s.ollama_executor_model,
+            "critic": s.ollama_critic_model,
+            "summarizer": s.ollama_summarizer_model,
+            "chat": s.ollama_chat_model,
+            "research": s.ollama_chat_model,
+        }
+        if tier == "sovereign":
+            local_map["chat"] = s.ollama_sovereign_model
+            local_map["planner"] = s.ollama_sovereign_model
+        elif tier == "nexus":
+            local_map["chat"] = s.ollama_nexus_model
+            # Keep planner on executor-class 8B for JSON reliability — deepseek-r1 often stalls on format=json
+            local_map["planner"] = s.ollama_executor_model
+            local_map["critic"] = s.ollama_executor_model
 
     cloud_map = {
         "planner": s.xai_planner_model,
@@ -127,7 +134,7 @@ def pick_model(role: Role, tier: str = "nexus", prefer: str | None = None) -> tu
         return "xai", cloud_map[role]
     if mode == "local":
         return "ollama", local_map[role]
-    # hybrid: prefer local for executor/seed, cloud for sovereign planner if available
+    # hybrid: prefer local for seed/nexus; cloud only for sovereign when key present
     if tier == "sovereign" and cloud_ok and role in {"planner", "critic", "chat"}:
         return "xai", cloud_map[role]
     return "ollama", local_map[role]
@@ -237,7 +244,8 @@ async def _ollama_chat(
     # host.docker.internal may fail on some setups — also try localhost from host
     bases = _ollama_bases()
     last = None
-    async with httpx.AsyncClient(timeout=180.0) as client:
+    # 90s hard cap — never leave OS loop / chat hanging for minutes on a stuck model
+    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
         for base in bases:
             try:
                 r = await client.post(f"{base}/api/chat", json={**payload})
@@ -246,6 +254,7 @@ async def _ollama_chat(
                 return (data.get("message") or {}).get("content") or ""
             except Exception as exc:  # noqa: BLE001
                 last = exc
+                logger.warning("Ollama chat %s via %s failed: %s", model, base, exc)
                 continue
     raise RuntimeError(f"Ollama unreachable: {last}")
 

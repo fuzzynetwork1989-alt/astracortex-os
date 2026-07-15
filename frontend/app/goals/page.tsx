@@ -23,6 +23,8 @@ export default function GoalsPage() {
     setRunning(true);
     setAnswer("");
     setEvents([]);
+    const ac = new AbortController();
+    const timeoutId = window.setTimeout(() => ac.abort(), 180_000);
     try {
       const start = await api<{ task_id: string }>(
         "/chat",
@@ -31,20 +33,33 @@ export default function GoalsPage() {
       );
       setTaskId(start.task_id);
       push(`task ${start.task_id}`);
-      await readSSE(`${getStreamApiUrl()}/chat/stream/${start.task_id}`, auth.access_token, (event, data) => {
-        if (event === "token") setAnswer((a) => a + String(data.token || ""));
-        else if (event === "plan") push(`plan v${data.version} · ${((data.steps as unknown[]) || []).length} steps`);
-        else if (event === "tool_call") push(`tool ${data.tool_name} ${data.success ? "ok" : "fail"}`);
-        else if (event === "reflection") push(`reflection q=${data.quality_score}`);
-        else if (event === "done") {
-          if (data.answer) setAnswer(String(data.answer));
-          push(`done ${data.status}`);
-        } else if (event === "error") push(`error ${data.detail}`);
-        else push(event);
-      });
+      await readSSE(
+        `${getStreamApiUrl()}/chat/stream/${start.task_id}`,
+        auth.access_token,
+        (event, data) => {
+          if (event === "token") setAnswer((a) => a + String(data.token || ""));
+          else if (event === "status") push(`status ${data.status || ""}`);
+          else if (event === "plan")
+            push(`plan v${data.version} · ${((data.steps as unknown[]) || []).length} steps`);
+          else if (event === "tool_call") push(`tool ${data.tool_name} ${data.success ? "ok" : "fail"}`);
+          else if (event === "reflection") push(`reflection q=${data.quality_score}`);
+          else if (event === "done") {
+            if (data.answer) setAnswer(String(data.answer));
+            push(`done ${data.status}`);
+          } else if (event === "error") push(`error ${data.detail}`);
+          else push(event);
+        },
+        ac.signal
+      );
     } catch (e) {
-      push(String((e as Error).message));
+      const err = e as Error;
+      if (err.name === "AbortError") {
+        push("Timed out after 180s. Ensure Ollama is running (qwen2.5:3b) and retry a shorter goal.");
+      } else {
+        push(String(err.message || e));
+      }
     } finally {
+      window.clearTimeout(timeoutId);
       setRunning(false);
     }
   }

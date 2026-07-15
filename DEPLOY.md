@@ -1,83 +1,126 @@
-# AstraCortex — Automated Cloud Deployment
+# AstraCortex — Cloud deployment (Railway + Vercel)
 
-Hybrid Cognitive OS: **local Ollama** + **cloud (Railway API + Vercel UI)** + optional **xAI**.
+**Cloud-first:** browser → Vercel (Next.js) → Railway (FastAPI) → xAI (LLM).  
+No local Ollama required on the server.
 
-## 1. GitHub
-
-Repository: `fuzzynetwork1989-alt/astracortex-os`
-
-CI runs on every push (`backend` pytest + `frontend` next build + Docker image).
-
-## 2. Railway (backend)
-
-1. New project → **Deploy from GitHub** → select this repo.
-2. **Root directory:** `backend`
-3. Add plugins:
-   - **PostgreSQL** → maps to `DATABASE_URL` (convert to `postgresql+asyncpg://...` if needed)
-   - **Redis** (optional) → `REDIS_URL` (falls back to in-memory if missing)
-4. Variables:
-
-```env
-JWT_SECRET=<long-random>
-INFERENCE_MODE=hybrid
-OLLAMA_BASE_URL=https://your-public-ollama-or-leave-empty
-XAI_API_KEY=<optional-cloud-brain>
-PUBLIC_API_URL=https://<your-railway-domain>
-ALLOW_CORS_ALL=true
-UPLOAD_DIR=/tmp/uploads
-DEFAULT_TOKEN_BALANCE=1000000
-HUMAN_LIKE_SYSTEM=true
-```
-
-5. Health check path: `/health`  
-6. Start command is Dockerfile `CMD` (uvicorn on `$PORT`).
-
-### DATABASE_URL note
-
-If Railway injects `postgres://`, set:
+## Architecture
 
 ```
-DATABASE_URL=postgresql+asyncpg://user:pass@host:port/db
+User browser / desktop / mobile
+        │
+        ▼
+  Vercel (frontend)     NEXT_PUBLIC_API_URL=https://api....railway.app
+        │  CORS direct fetch (never Next proxy)
+        ▼
+  Railway (FastAPI)     Postgres + Redis plugins
+        │
+        ▼
+  xAI Grok API          XAI_API_KEY (required for cloud LLM)
 ```
 
-(script `scripts/normalize_database_url.py` can help).
+Repo: `https://github.com/fuzzynetwork1989-alt/astracortex-os`
+
+---
+
+## 1. Push latest code
+
+```bash
+git push origin main
+```
+
+---
+
+## 2. Railway (API + Postgres + Redis)
+
+1. [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub**
+2. Select `fuzzynetwork1989-alt/astracortex-os`
+3. **Root Directory:** `backend`
+4. **Builder:** Dockerfile (auto from `backend/Dockerfile`)
+5. Add plugins:
+   - **PostgreSQL** (Railway sets `DATABASE_URL` — app auto-converts to `asyncpg` + SSL)
+   - **Redis** (optional; in-memory WM if missing)
+6. **Variables** (service settings):
+
+| Variable | Value |
+|----------|--------|
+| `JWT_SECRET` | long random string |
+| `INFERENCE_MODE` | `cloud` |
+| `XAI_API_KEY` | your xAI key (`xai-...`) |
+| `XAI_BASE_URL` | `https://api.x.ai/v1` |
+| `ALLOW_CORS_ALL` | `true` |
+| `UPLOAD_DIR` | `/tmp/uploads` |
+| `PUBLIC_API_URL` | `https://<your-railway-domain>` (set after first deploy) |
+| `DEFAULT_TOKEN_BALANCE` | `1000000` |
+| `HUMAN_LIKE_SYSTEM` | `true` |
+| `PRODUCT_TIER_DEFAULT` | `seed` |
+
+7. Health check path: `/ready` (or `/health`)
+8. Generate domain → copy URL → set `PUBLIC_API_URL` to that HTTPS URL
+9. Redeploy
+
+### Verify API
+
+```bash
+curl https://YOUR-APP.up.railway.app/health
+curl https://YOUR-APP.up.railway.app/ready
+```
+
+---
 
 ## 3. Vercel (frontend)
 
-1. Import GitHub repo in Vercel.
+1. [vercel.com](https://vercel.com) → **Add New** → **Project** → import the same GitHub repo
 2. **Root Directory:** `frontend`
 3. Framework: Next.js
-4. Env:
+4. Environment variable:
+
+| Name | Value |
+|------|--------|
+| `NEXT_PUBLIC_API_URL` | `https://YOUR-APP.up.railway.app` (no trailing slash) |
+
+5. Deploy → open the Vercel URL → **Register** → Chat / API keys
+
+---
+
+## 4. Optional: hybrid (cloud API + your home Ollama)
+
+Only if you expose Ollama safely (tunnel):
 
 ```env
-NEXT_PUBLIC_API_URL=https://<your-railway-domain>
+INFERENCE_MODE=hybrid
+OLLAMA_BASE_URL=https://your-tunnel.example
+XAI_API_KEY=...   # failover
 ```
 
-5. Deploy. Preview + production both work (CORS open when `ALLOW_CORS_ALL=true`).
+Default cloud path needs **only** `XAI_API_KEY`.
 
-## 4. Hybrid modes
+---
 
-| Mode | Config |
-|---|---|
-| Local full stack | `docker compose up` + Ollama on host |
-| Cloud UI + Cloud API + local Ollama tunnel | Railway API + `OLLAMA_BASE_URL` via tunnel |
-| Cloud UI + Cloud API + xAI only | `INFERENCE_MODE=cloud` + `XAI_API_KEY` |
-| Hybrid | `INFERENCE_MODE=hybrid` (default) |
+## 5. Sellable OpenAI-compatible API
 
-## 5. First-time verify
+After register, use the `sk-astra-...` key:
 
 ```bash
-curl https://<railway>/health
-curl https://<vercel>/login
-# Register in UI → create API key → 
-curl https://<railway>/v1/chat/completions \
+curl https://YOUR-APP.up.railway.app/v1/chat/completions \
   -H "Authorization: Bearer sk-astra-..." \
   -H "Content-Type: application/json" \
-  -d '{"model":"astracortex-seed","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"seed","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-## 6. App clients
+---
 
-- **Desktop:** `desktop/` Electron → points at Vercel URL  
-- **Mobile:** `mobile/` Expo → `EXPO_PUBLIC_API_URL=https://<railway>`  
-- **XR:** Web `/xr` against same API  
+## 6. Desktop / mobile clients
+
+- Electron: set API URL to Railway domain (or keep Vercel UI URL for shell)
+- Expo: `EXPO_PUBLIC_API_URL=https://YOUR-APP.up.railway.app`
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Register “Failed to fetch” | `NEXT_PUBLIC_API_URL` wrong or CORS; set `ALLOW_CORS_ALL=true` |
+| 500 on /ready | Postgres not linked / `DATABASE_URL` missing |
+| Chat empty / offline | Set `XAI_API_KEY` + `INFERENCE_MODE=cloud` |
+| Socket hang up via Next | Never proxy LLM through Next rewrites |

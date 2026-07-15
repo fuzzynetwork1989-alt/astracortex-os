@@ -70,7 +70,10 @@ export default function DocumentsPage() {
           disabled={busy}
           onChange={(e) => onUpload(e.target.files?.[0] || null)}
         />
-        <p className="muted">Prefer plain text / markdown for v1.0 ingest quality.</p>
+        <p className="muted">
+          Prefer plain text / markdown (.txt, .md, .csv, .json, .log). Do not upload Windows shortcuts
+          (.lnk) — upload the real file.
+        </p>
         {msg && <div className="chip">{msg}</div>}
       </div>
 

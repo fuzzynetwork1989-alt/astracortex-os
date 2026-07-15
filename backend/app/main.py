@@ -52,33 +52,58 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AstraCortex OS",
     description="Hybrid Cognitive Operating System — local Ollama + cloud + sellable OpenAI-compatible API",
-    version="2.0.0",
+    version="2.1.2",
     lifespan=lifespan,
 )
 
 cfg = get_settings()
-_origins = cfg.cors_origin_list + [
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://localhost:8081",
-    "http://localhost:19006",
-]
-if cfg.allow_cors_all:
-    # Vercel preview URLs + hybrid clients
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
+# Always include both localhost and 127.0.0.1 — browsers treat them as different origins
+_origins = list(
+    dict.fromkeys(
+        cfg.cors_origin_list
+        + [
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+            "http://127.0.0.1:3001",
+            "http://localhost:3001",
+            "http://localhost:8081",
+            "http://127.0.0.1:8081",
+            "http://localhost:19006",
+            "http://127.0.0.1:19006",
+        ]
     )
-else:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+)
+# Dev default: open CORS so browser→API never looks like a "CORS" failure when the real bug is a 500
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if cfg.allow_cors_all else _origins,
+    allow_credentials=not cfg.allow_cors_all,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request, exc):  # noqa: ANN001
+    """Ensure JSON 500s always leave the app (CORS middleware still adds headers)."""
+    from fastapi import HTTPException
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    # Framework handlers normally win; if we still get these, respond correctly (never re-raise).
+    if isinstance(exc, RequestValidationError):
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if isinstance(exc, StarletteHTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal error: {exc.__class__.__name__}: {exc}"},
     )
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -120,7 +145,7 @@ async def health():
     payload = {
         "status": "ok",
         "product": "AstraCortex OS",
-        "version": "2.1.1",
+        "version": "2.1.2",
         "hybrid": {
             "mode": get_settings().inference_mode,
             "local_ollama": st.get("ollama_online"),

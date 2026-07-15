@@ -64,6 +64,7 @@ async def chat_start(
         budget_json={
             "max_steps": settings.default_step_budget,
             "max_tokens": settings.default_token_budget,
+            "use_rag": body.use_rag,
         },
     )
     db.add(task)
@@ -112,7 +113,12 @@ async def chat_stream(
                     return
 
             try:
-                async for evt in run_cognitive_loop(db, task, user_role=user.role):
+                use_rag = True
+                if isinstance(task.budget_json, dict) and "use_rag" in task.budget_json:
+                    use_rag = bool(task.budget_json.get("use_rag", True))
+                async for evt in run_cognitive_loop(
+                    db, task, user_role=user.role, use_rag=use_rag
+                ):
                     yield {
                         "event": evt["event"],
                         "data": json.dumps(evt.get("data"), default=str),

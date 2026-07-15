@@ -61,7 +61,17 @@ export function loadAuth(): AuthState | null {
 }
 
 export function saveAuth(auth: AuthState) {
-  localStorage.setItem("astracortex_auth", JSON.stringify(auth));
+  // Login does not re-return the raw API key — keep the one from register/create
+  const prev = loadAuth();
+  const merged: AuthState = {
+    ...auth,
+    api_key: auth.api_key || prev?.api_key || localStorage.getItem("astracortex_last_api_key") || null,
+    token_balance: auth.token_balance ?? prev?.token_balance ?? null,
+  };
+  localStorage.setItem("astracortex_auth", JSON.stringify(merged));
+  if (merged.api_key) {
+    localStorage.setItem("astracortex_last_api_key", merged.api_key);
+  }
 }
 
 export function clearAuth() {
@@ -143,6 +153,13 @@ export async function api<T>(
       if (res.status === 204) return undefined as T;
       return (await res.json()) as T;
     } catch (err) {
+      // User cancel / client timeout — never wrap or retry
+      if (
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        throw err;
+      }
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
       const transient =
@@ -185,6 +202,12 @@ export async function readSSE(
       signal,
     });
   } catch (err) {
+    if (
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.name === "AbortError")
+    ) {
+      throw err;
+    }
     throw friendlyFetchError(err, url);
   }
   if (!res.ok || !res.body) throw new Error(await res.text());

@@ -25,12 +25,15 @@ async def run_cognitive_loop(
     task: Task,
     *,
     user_role: str = "user",
+    use_rag: bool = True,
 ) -> AsyncIterator[dict[str, Any]]:
     settings = get_settings()
     budget = task.budget_json or {
         "max_steps": settings.default_step_budget,
         "max_tokens": settings.default_token_budget,
     }
+    if isinstance(budget, dict) and "use_rag" in budget:
+        use_rag = bool(budget.get("use_rag", use_rag))
     usage = {"steps": 0, "tool_calls": 0, "approx_tokens": 0}
 
     task.status = "planning"
@@ -41,7 +44,7 @@ async def run_cognitive_loop(
         db,
         task.org_id,
         task.goal,
-        use_rag=True,
+        use_rag=use_rag,
         task_hint="knowledge" if "document" in task.goal.lower() or "doc" in task.goal.lower() else "general",
     )
     yield {
@@ -159,6 +162,7 @@ async def run_cognitive_loop(
                         "content": f"Goal: {task.goal}\nInstruction: {instr}\nContext:\n{context_blob}",
                     },
                 ],
+                tier="seed",
             )
             out = {"text": text}
             step_row.step_output = out
@@ -195,11 +199,23 @@ async def run_cognitive_loop(
     ]
 
     answer_parts: list[str] = []
-    async for token in llm.chat_stream("executor", final_messages):
-        answer_parts.append(token)
-        yield {"event": "token", "data": {"token": token}}
+    try:
+        async for token in llm.chat_stream("executor", final_messages, tier="seed"):
+            answer_parts.append(token)
+            yield {"event": "token", "data": {"token": token}}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Executor stream failed: %s — non-stream fallback", exc)
+        text = await llm.chat("executor", final_messages, tier="seed")
+        answer_parts.append(text)
+        for word in text.split():
+            yield {"event": "token", "data": {"token": word + " "}}
 
     final_answer = "".join(answer_parts).strip()
+    if not final_answer:
+        final_answer = (
+            "OS loop finished tools but the model returned an empty answer. "
+            "Check Ollama (qwen2.5:3b) is running."
+        )
     task.final_answer = final_answer
     task.citations = retrieved["citations"]
 
@@ -258,39 +274,54 @@ def _format_context(retrieved: dict[str, Any]) -> str:
     return "\n\n".join(parts) if parts else "(no retrieved context)"
 
 
-async def _create_plan(goal: str, context: str) -> dict[str, Any]:
-    raw = await llm.chat(
-        "planner",
-        [
+def _default_plan(goal: str) -> dict[str, Any]:
+    return {
+        "steps": [
+            {"type": "tool", "tool": "document_search", "input": {"query": goal}, "rationale": "grounding"},
+            {"type": "tool", "tool": "memory_search", "input": {"query": goal}, "rationale": "memory"},
             {
-                "role": "system",
-                "content": (
-                    "You are AstraCortex planner. Return JSON only with shape: "
-                    '{"steps":[{"type":"tool"|"llm","tool":string|null,"input":object,"rationale":string}],'
-                    '"retrieval_policy":"hybrid"|"rag"|"memory"}. '
-                    "Available tools: document_search, memory_search, calculator, http_get. "
-                    "Prefer document_search and memory_search before final synthesis. Max 6 steps."
-                ),
+                "type": "llm",
+                "tool": None,
+                "input": {"instruction": "Synthesize final answer with citations"},
+                "rationale": "answer",
             },
-            {"role": "user", "content": f"Goal: {goal}\n\nContext preview:\n{context[:4000]}"},
         ],
-        response_json=True,
-    )
+        "retrieval_policy": "hybrid",
+    }
+
+
+async def _create_plan(goal: str, context: str) -> dict[str, Any]:
+    import asyncio
+
+    try:
+        raw = await asyncio.wait_for(
+            llm.chat(
+                "planner",
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are AstraCortex planner. Return JSON only with shape: "
+                            '{"steps":[{"type":"tool"|"llm","tool":string|null,"input":object,"rationale":string}],'
+                            '"retrieval_policy":"hybrid"|"rag"|"memory"}. '
+                            "Available tools: document_search, memory_search, calculator, http_get. "
+                            "Prefer document_search and memory_search before final synthesis. Max 6 steps."
+                        ),
+                    },
+                    {"role": "user", "content": f"Goal: {goal}\n\nContext preview:\n{context[:4000]}"},
+                ],
+                response_json=True,
+                tier="seed",
+            ),
+            timeout=55.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Planner failed/timeout (%s) — using default plan", exc)
+        return _default_plan(goal)
+
     plan = llm.parse_json_loose(raw)
     if not plan.get("steps"):
-        plan = {
-            "steps": [
-                {"type": "tool", "tool": "document_search", "input": {"query": goal}, "rationale": "grounding"},
-                {"type": "tool", "tool": "memory_search", "input": {"query": goal}, "rationale": "memory"},
-                {
-                    "type": "llm",
-                    "tool": None,
-                    "input": {"instruction": "Synthesize final answer with citations"},
-                    "rationale": "answer",
-                },
-            ],
-            "retrieval_policy": "hybrid",
-        }
+        return _default_plan(goal)
     return plan
 
 
@@ -300,27 +331,44 @@ async def _critique(
     answer: str,
     tool_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    raw = await llm.chat(
-        "critic",
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You are AstraCortex critic (maker-checker). Return JSON: "
-                    '{"critique":str,"fix_plan":str,"goal_drift":bool,"quality_score":0-1,'
-                    '"should_write_memory":bool,"semantic_items":[{"key":str,"value":str,"confidence":0-1,"source":str}]}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {"goal": goal, "plan": plan, "answer": answer[:3000], "tools": tool_results[:10]},
-                    default=str,
-                ),
-            },
-        ],
-        response_json=True,
-    )
+    import asyncio
+
+    try:
+        raw = await asyncio.wait_for(
+            llm.chat(
+                "critic",
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are AstraCortex critic (maker-checker). Return JSON: "
+                            '{"critique":str,"fix_plan":str,"goal_drift":bool,"quality_score":0-1,'
+                            '"should_write_memory":bool,"semantic_items":[{"key":str,"value":str,"confidence":0-1,"source":str}]}'
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"goal": goal, "plan": plan, "answer": answer[:3000], "tools": tool_results[:10]},
+                            default=str,
+                        ),
+                    },
+                ],
+                response_json=True,
+                tier="seed",
+            ),
+            timeout=45.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Critic failed/timeout (%s)", exc)
+        return {
+            "critique": f"Critic skipped: {exc}",
+            "fix_plan": None,
+            "goal_drift": False,
+            "quality_score": 0.6,
+            "should_write_memory": False,
+            "semantic_items": [],
+        }
     data = llm.parse_json_loose(raw)
     return {
         "critique": data.get("critique", raw[:1000]),

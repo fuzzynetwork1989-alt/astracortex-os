@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -9,11 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_user_org
 from app.core.config import get_settings
+from app.core.logging import logger
 from app.db.models import Document, User
 from app.db.session import get_db
 from app.services.ingest import ingest_document
 
 router = APIRouter()
+
+_ALLOWED_SUFFIXES = {".txt", ".md", ".csv", ".json", ".log", ".markdown", ".tsv", ".yaml", ".yml", ".toml"}
+_BLOCKED_SUFFIXES = {".lnk", ".exe", ".dll", ".bin", ".zip", ".pdf", ".docx", ".png", ".jpg", ".jpeg"}
 
 
 @router.post("/upload")
@@ -27,15 +30,38 @@ async def upload_document(
     upload_root = Path(settings.upload_dir)
     upload_root.mkdir(parents=True, exist_ok=True)
 
-    doc_id = uuid4()
     safe_name = Path(file.filename or "upload.txt").name
+    suffix = Path(safe_name).suffix.lower()
+    if suffix in _BLOCKED_SUFFIXES or (suffix and suffix not in _ALLOWED_SUFFIXES and "shortcut" in safe_name.lower()):
+        raise HTTPException(
+            400,
+            f"Unsupported file type '{suffix or safe_name}'. "
+            "Upload plain text: .txt, .md, .csv, .json, .log (not Windows shortcuts .lnk).",
+        )
+    # Windows often appends " - Shortcut.lnk" when dragging
+    if safe_name.lower().endswith(".lnk") or " - shortcut." in safe_name.lower():
+        raise HTTPException(
+            400,
+            "That looks like a Windows shortcut (.lnk), not the real file. "
+            "Open the real .md/.txt and upload that instead.",
+        )
+
+    doc_id = uuid4()
     storage = upload_root / f"{doc_id}_{safe_name}"
 
     content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty file")
+    # Reject binary early (null-heavy header)
+    if content[:4096].count(b"\x00") > 8:
+        raise HTTPException(
+            400,
+            "File contains binary data / null bytes. Upload plain UTF-8 text only.",
+        )
+
     async with aiofiles.open(storage, "wb") as f:
         await f.write(content)
 
-    # Prefer text; binary PDFs etc. stored as-is (ingest reads as text with errors ignored)
     doc = Document(
         id=doc_id,
         org_id=org_id,
@@ -63,14 +89,28 @@ async def ingest(
     ctx: tuple[User, UUID] = Depends(get_user_org),
     db: AsyncSession = Depends(get_db),
 ):
-    user, org_id = ctx
+    _, org_id = ctx
     result = await db.execute(
         select(Document).where(Document.id == document_id, Document.org_id == org_id)
     )
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(404, "Document not found")
-    count = await ingest_document(db, doc)
+    try:
+        count = await ingest_document(db, doc)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Ingest failed for %s", document_id)
+        try:
+            doc.status = "failed"
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            await db.rollback()
+        # Always return JSON (CORS middleware still wraps this)
+        raise HTTPException(500, f"Ingest failed: {exc}") from exc
     return {"id": str(doc.id), "status": doc.status, "chunks": count}
 
 

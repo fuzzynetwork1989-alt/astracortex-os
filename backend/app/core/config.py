@@ -6,9 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Hybrid providers
+    # Hybrid providers — cloud deploy: set INFERENCE_MODE=cloud + XAI_API_KEY
     inference_mode: str = "hybrid"  # local | cloud | hybrid
-    ollama_base_url: str = "http://host.docker.internal:11434"
+    ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_enabled: bool = True
     # Best local roles given installed models (tools + thinking)
     ollama_planner_model: str = "deepseek-r1:8b"
