@@ -1,8 +1,8 @@
 # App Store Readiness Report
 
-_Generated 2026-08-20T09:43:44+00:00Z by store_autopilot.py_
+_Generated 2026-08-20T09:44:48+00:00Z by store_autopilot.py_
 
-**Score: 17/23 applicable checks passed** (0 not applicable to this repo)
+**Score: 18/23 applicable checks passed** (0 not applicable to this repo)
 
 ## Legal & Compliance
 
@@ -31,7 +31,7 @@ _Generated 2026-08-20T09:43:44+00:00Z by store_autopilot.py_
 
 - [MISSING] robots.txt present
 - [MISSING] sitemap present or generated
-- [MISSING (critical)] Security headers / CSP configured
+- [PASS] Security headers / CSP configured
 - [PASS] Environment variable example file (.env.example) present, no real secrets committed
 
 ## CI/CD & Security
