@@ -1,3 +1,6 @@
+plugins {
+    id "dev.nx.gradle.project-graph" version "0.1.24"
+}
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
 buildscript {
@@ -24,6 +27,7 @@ buildscript {
 apply plugin: "com.facebook.react.rootproject"
 
 allprojects {
+    apply plugin "dev.nx.gradle.project-graph"
     repositories {
         maven {
             // All of React Native (JS, Obj-C sources, Android binaries) is installed from npm
