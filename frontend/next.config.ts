@@ -10,8 +10,29 @@ import path from "path";
  * Optional legacy rewrite is DISABLED by default. Only enable with
  * ENABLE_LEGACY_API_PROXY=1 for debugging static assets — never for chat.
  */
+const securityHeaders = [
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+  {
+    key: "Content-Security-Policy",
+    value: [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "connect-src 'self' https: wss:",
+      "frame-ancestors 'none'",
+    ].join("; "),
+  },
+];
+
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname),
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
   // Avoid proxy entirely
   async rewrites() {
     if (process.env.ENABLE_LEGACY_API_PROXY === "1") {
